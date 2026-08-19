@@ -21,6 +21,13 @@ async function bootstrap(): Promise<void> {
 
   app.setGlobalPrefix(prefix);
 
+  // Behind a platform load balancer (Render, Fly, Heroku) every request arrives
+  // from the proxy. Without this, rate limiting sees one client and the audit
+  // log records the proxy's address instead of the user's.
+  if (isProduction) {
+    app.set('trust proxy', 1);
+  }
+
   // The API is consumed by a separate origin (Next.js) and never renders HTML,
   // so CSP and cross-origin embedding protections are handled at that layer.
   app.use(
@@ -69,6 +76,14 @@ async function bootstrap(): Promise<void> {
 
   // Seed the settings table on first boot so the admin panel is never empty.
   await app.get(SettingsService).ensureDefaults();
+
+  // Storage on most PaaS filesystems is wiped on every deploy.
+  if (isProduction && (process.env.STORAGE_PROVIDER ?? 'local') === 'local') {
+    logger.warn(
+      'STORAGE_PROVIDER=local in production: uploaded files are lost on redeploy ' +
+        'unless a persistent disk is mounted at STORAGE_LOCAL_PATH. Prefer s3 or cloudinary.',
+    );
+  }
 
   await app.listen(port, '0.0.0.0');
   logger.log('CARE Workflow API listening on http://localhost:' + port + '/' + prefix);

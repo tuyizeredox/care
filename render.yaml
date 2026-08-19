@@ -1,0 +1,157 @@
+# ============================================================================
+#  CARE Workflow — Render Blueprint
+#
+#  Deploys three things: a managed Postgres, the NestJS API, and the Next.js
+#  client. Point Render at this file (New → Blueprint) and it provisions all
+#  three, wiring the database and the cross-service URLs automatically.
+#
+#  Two values must be set by hand after the first deploy — see the comments on
+#  NEXT_PUBLIC_API_URL and NEXT_PUBLIC_APP_URL below, and docs/deployment.md.
+# ============================================================================
+
+databases:
+  - name: care-db
+    databaseName: care
+    user: care
+    # Keep the database in the same region as the services; every extra
+    # millisecond of round trip is multiplied by the queries in a request.
+    region: frankfurt
+    plan: basic-256mb
+
+services:
+  # --------------------------------------------------------------------------
+  # API
+  # --------------------------------------------------------------------------
+  - type: web
+    name: care-api
+    runtime: node
+    region: frankfurt
+    plan: starter
+    branch: main
+    # Only redeploy the API when something it depends on actually changed.
+    buildFilter:
+      paths:
+        - apps/api/**
+        - package.json
+        - package-lock.json
+        - render.yaml
+    buildCommand: npm ci --include=dev && npm run prisma:generate && npm run build:api
+    # Runs after the build, before traffic switches to the new version. If your
+    # plan does not include pre-deploy commands, append `&& npm run prisma:deploy`
+    # to buildCommand instead.
+    preDeployCommand: npm run prisma:deploy
+    startCommand: npm run start:api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: '22'
+
+      # Render's managed Postgres is not a transaction-mode pooler, so the same
+      # connection string serves the app and Prisma Migrate.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: care-db
+          property: connectionString
+      - key: DIRECT_URL
+        fromDatabase:
+          name: care-db
+          property: connectionString
+
+      # Generated once by Render and then held; never commit real secrets.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      - key: BCRYPT_SALT_ROUNDS
+        value: '12'
+
+      # The API only accepts browser requests from the client service. Render
+      # supplies a bare hostname; the config layer adds the https:// scheme.
+      - key: CORS_ORIGINS
+        fromService:
+          name: care-web
+          type: web
+          property: host
+      - key: NEXT_PUBLIC_APP_URL
+        fromService:
+          name: care-web
+          type: web
+          property: host
+
+      - key: RATE_LIMIT_TTL
+        value: '60'
+      - key: RATE_LIMIT_MAX
+        value: '300'
+      - key: AUTH_RATE_LIMIT_MAX
+        value: '10'
+
+      # Render's filesystem is wiped on every deploy. Either attach the disk
+      # declared below, or switch to s3/cloudinary and fill in the credentials.
+      - key: STORAGE_PROVIDER
+        value: local
+      - key: STORAGE_LOCAL_PATH
+        value: /var/data/uploads
+      - key: MAX_UPLOAD_SIZE_MB
+        value: '25'
+
+      # Email is off until SMTP is configured; messages are written to the log.
+      - key: EMAIL_ENABLED
+        value: 'false'
+      - key: EMAIL_FROM
+        value: CARE Workflow <no-reply@care.demo>
+
+      - key: REMINDERS_ENABLED
+        value: 'true'
+      - key: REMINDERS_CRON
+        value: 0 7 * * *
+
+    # Uploads must outlive a deploy. Remove this block if you use S3 or
+    # Cloudinary instead.
+    disk:
+      name: care-uploads
+      mountPath: /var/data
+      sizeGB: 5
+
+  # --------------------------------------------------------------------------
+  # Web client
+  # --------------------------------------------------------------------------
+  - type: web
+    name: care-web
+    runtime: node
+    region: frankfurt
+    plan: starter
+    branch: main
+    buildFilter:
+      paths:
+        - apps/web/**
+        - package.json
+        - package-lock.json
+        - render.yaml
+    buildCommand: npm ci --include=dev && npm run build:web
+    startCommand: npm run start:web
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: '22'
+
+      # NEXT_PUBLIC_* values are inlined into the browser bundle at BUILD time,
+      # so these cannot be wired with fromService (that resolves at runtime).
+      # After the first deploy, set both in the Render dashboard and redeploy:
+      #   NEXT_PUBLIC_API_URL  = https://care-api.onrender.com/api
+      #   NEXT_PUBLIC_APP_URL  = https://care-web.onrender.com
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false
+
+      # Hides the demo account shortcuts on the sign-in screen.
+      - key: NEXT_PUBLIC_SHOW_DEMO_ACCOUNTS
+        value: 'false'

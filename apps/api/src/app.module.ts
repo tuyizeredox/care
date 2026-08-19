@@ -21,6 +21,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CommentsModule } from './modules/comments/comments.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DepartmentsModule } from './modules/departments/departments.module';
+import { HealthModule } from './modules/health/health.module';
 import { MailModule } from './modules/mail/mail.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrganizationModule } from './modules/organization/organization.module';
@@ -63,6 +64,7 @@ import { WorkflowsModule } from './modules/workflows/workflows.module';
 
     PrismaModule,
     CommonModule,
+    HealthModule,
     AuditModule,
     MailModule,
     StorageModule,

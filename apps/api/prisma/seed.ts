@@ -1126,6 +1126,22 @@ async function seedSettings(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // The seed creates demo accounts that share one well-known password. That is
+  // fine locally and catastrophic on a live deployment, so production has to
+  // ask for it explicitly.
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PRODUCTION_SEED !== 'true') {
+    console.error(
+      'Refusing to seed with NODE_ENV=production.
+' +
+        'This creates demo accounts with a shared password.
+' +
+        'If you genuinely want reference data in this environment, set ' +
+        'ALLOW_PRODUCTION_SEED=true and change SEED_DEFAULT_PASSWORD first.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   console.log('Seeding the CARE workflow platform...');
 
   console.log('- roles and permissions');

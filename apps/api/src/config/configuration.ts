@@ -48,14 +48,18 @@ const toInt = (value: string | undefined, fallback: number): number => {
 
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
-  port: toInt(process.env.API_PORT, 4000),
+  // Render, Heroku and friends inject PORT; API_PORT stays as the local override.
+  port: toInt(process.env.PORT ?? process.env.API_PORT, 4000),
   apiPrefix: process.env.API_PREFIX ?? 'api',
   appUrl: process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000',
   apiUrl: process.env.API_URL ?? 'http://localhost:4000',
   corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
     .split(',')
     .map((origin) => origin.trim())
-    .filter(Boolean),
+    .filter(Boolean)
+    // Platforms expose a bare hostname; an Origin header always carries a scheme.
+    .map((origin) => (/^https?:\/\//.test(origin) ? origin : 'https://' + origin))
+    .map((origin) => origin.replace(/\/$/, '')),
   jwt: {
     secret: process.env.JWT_SECRET ?? 'insecure-development-secret-change-me',
     expiresIn: process.env.JWT_EXPIRES_IN ?? '15m',
