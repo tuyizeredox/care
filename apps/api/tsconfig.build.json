@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    // `npm run typecheck` writes a tsbuildinfo for the wider project (which also
+    // covers prisma/ and test/). Reusing it here produced a partial dist tree, so
+    // production builds always compile from scratch.
+    "incremental": false
+  },
+  "include": ["src/**/*"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "prisma",
+    "test",
+    "**/*.spec.ts",
+    "**/*.e2e-spec.ts"
+  ]
+}

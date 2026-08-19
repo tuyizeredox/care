@@ -1,0 +1,939 @@
+// ===========================================================================
+//  OrgFlow — Organizational Workflow, Task Tracking & Accountability Platform
+//  PostgreSQL schema (Prisma ORM)
+//
+//  Design notes
+//  ------------
+//  * The organisational hierarchy is DATA, never code. Reporting lines live in
+//    `Position.reportsToId` (structural) and `User.managerId` (effective), so
+//    administrators can re-shape the organisation at runtime.
+//  * Every meaningful mutation of a Task writes an immutable `TaskHistory` row
+//    and (for security-relevant actions) an `AuditLog` row. History is never
+//    deleted or updated.
+//  * `TaskAssignment` is an ownership *ledger*: one row per (task, owner)
+//    tenure with enteredAt/exitedAt/durationSeconds. This single table powers
+//    the whole bottleneck-analytics engine.
+//  * Soft deletion (`deletedAt`) is used everywhere history matters.
+// ===========================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url       = env("DATABASE_URL")
+  // Pooled connections cannot hold the advisory locks Prisma Migrate needs.
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum OrgUnitType {
+  ORGANIZATION
+  DIVISION
+  DEPARTMENT
+  TEAM
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum ProjectMemberRole {
+  MANAGER
+  LEAD
+  MEMBER
+  VIEWER
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum TaskStatus {
+  DRAFT
+  ASSIGNED
+  IN_PROGRESS
+  SUBMITTED
+  UNDER_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+  COMPLETED
+  BLOCKED
+  CANCELLED
+}
+
+/// Why the task is sitting where it is - drives the "Waiting For" dashboards.
+enum WaitingReason {
+  NONE
+  ACTION
+  REVIEW
+  APPROVAL
+  DOCUMENTS
+  INFORMATION
+  EXTERNAL_PARTY
+  BLOCKED
+}
+
+enum StageType {
+  WORK
+  REVIEW
+  APPROVAL
+  FINAL
+}
+
+/// How a workflow stage resolves the person who should hold the task.
+enum AssigneeMode {
+  SPECIFIC_USER
+  POSITION
+  ROLE
+  DEPARTMENT_HEAD
+  PROJECT_MANAGER
+  MANAGER_OF_PREVIOUS
+  TASK_CREATOR
+  UNASSIGNED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+  CANCELLED
+  SKIPPED
+}
+
+enum AssignmentRole {
+  OWNER
+  REVIEWER
+  APPROVER
+  COLLABORATOR
+}
+
+enum HistoryAction {
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_ASSIGNED
+  TASK_REASSIGNED
+  TASK_STARTED
+  TASK_SUBMITTED
+  TASK_HANDED_OVER
+  TASK_REVIEW_STARTED
+  TASK_REVIEWED
+  TASK_APPROVED
+  TASK_REJECTED
+  CHANGES_REQUESTED
+  TASK_COMPLETED
+  TASK_REOPENED
+  TASK_BLOCKED
+  TASK_UNBLOCKED
+  TASK_CANCELLED
+  STATUS_CHANGED
+  PRIORITY_CHANGED
+  DEADLINE_CHANGED
+  COMMENT_ADDED
+  ATTACHMENT_ADDED
+  ATTACHMENT_REMOVED
+  SUBTASK_ADDED
+  SUBTASK_COMPLETED
+  WORKFLOW_STAGE_ADVANCED
+  APPROVAL_REQUESTED
+  TAG_ADDED
+  TAG_REMOVED
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_HANDED_OVER
+  TASK_SUBMITTED
+  APPROVAL_REQUESTED
+  TASK_APPROVED
+  TASK_REJECTED
+  CHANGES_REQUESTED
+  COMMENT_ADDED
+  MENTIONED
+  DEADLINE_APPROACHING
+  DEADLINE_TODAY
+  TASK_OVERDUE
+  TEAM_TASK_OVERDUE
+  TASK_COMPLETED
+  TASK_BLOCKED
+  SYSTEM
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+// ---------------------------------------------------------------------------
+// IDENTITY, ROLES & PERMISSIONS
+// ---------------------------------------------------------------------------
+
+model Permission {
+  id          String   @id @default(cuid())
+  /// Machine key, e.g. `create_task`, `approve_task`
+  key         String   @unique
+  name        String
+  description String?
+  /// Grouping for the admin UI, e.g. "Tasks", "Organization"
+  category    String   @default("General")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  roles RolePermission[]
+  users UserPermission[]
+
+  @@index([category])
+  @@map("permissions")
+}
+
+model Role {
+  id          String    @id @default(cuid())
+  /// SUPER_ADMIN, COUNTRY_DIRECTOR, DIRECTOR, MANAGER, ...
+  key         String    @unique
+  name        String
+  description String?
+  /// Higher = more senior. Used for "can see below me" checks.
+  level       Int       @default(0)
+  /// System roles cannot be deleted through the admin panel.
+  isSystem    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  permissions RolePermission[]
+  users       User[]
+  stages      WorkflowStage[]
+
+  @@index([level])
+  @@map("roles")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+/// Per-user override on top of the role. `granted = false` explicitly revokes.
+model UserPermission {
+  userId       String
+  permissionId String
+  granted      Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, permissionId])
+  @@index([permissionId])
+  @@map("user_permissions")
+}
+
+model User {
+  id                 String     @id @default(cuid())
+  email              String     @unique
+  /// bcrypt hash - never selected into API responses
+  passwordHash       String
+  firstName          String
+  lastName           String
+  phone              String?
+  avatarUrl          String?
+  jobTitle           String?
+  bio                String?
+  status             UserStatus @default(ACTIVE)
+  emailVerified      Boolean    @default(false)
+  mustChangePassword Boolean    @default(false)
+  lastLoginAt        DateTime?
+  timezone           String     @default("Africa/Kigali")
+  locale             String     @default("en")
+
+  roleId       String
+  departmentId String?
+  positionId   String?
+  managerId    String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  role       Role        @relation(fields: [roleId], references: [id])
+  department Department? @relation("DepartmentMembers", fields: [departmentId], references: [id])
+  position   Position?   @relation(fields: [positionId], references: [id])
+  manager    User?       @relation("UserReports", fields: [managerId], references: [id])
+  reports    User[]      @relation("UserReports")
+
+  permissions        UserPermission[]
+  refreshTokens      RefreshToken[]
+  headedDepartments  Department[]       @relation("DepartmentHead")
+  headedUnits        OrganizationUnit[] @relation("UnitHead")
+  managedProjects    Project[]          @relation("ProjectManager")
+  projectMemberships ProjectMember[]
+
+  createdTasks  Task[] @relation("TaskCreator")
+  ownedTasks    Task[] @relation("TaskOwner")
+  assignedTasks Task[] @relation("TaskAssigner")
+  waitedOnTasks Task[] @relation("TaskWaitingFor")
+
+  taskAssignments         TaskAssignment[]         @relation("AssignmentUser")
+  assignmentsMade         TaskAssignment[]         @relation("AssignmentAssigner")
+  taskHistory             TaskHistory[]
+  comments                TaskComment[]
+  mentions                CommentMention[]
+  attachments             TaskAttachment[]
+  approvalsToAction       Approval[]               @relation("ApprovalApprover")
+  approvalsRequested      Approval[]               @relation("ApprovalRequester")
+  notifications           Notification[]
+  auditLogs               AuditLog[]
+  watching                TaskWatcher[]
+  createdWorkflows        TaskWorkflow[]           @relation("WorkflowCreator")
+  stageAssignments        WorkflowStage[]          @relation("StageSpecificUser")
+  notificationPreferences NotificationPreference[]
+
+  @@index([departmentId])
+  @@index([managerId])
+  @@index([positionId])
+  @@index([roleId])
+  @@index([status])
+  @@index([deletedAt])
+  @@index([lastName, firstName])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  /// sha256 of the issued refresh token - the raw token is never stored
+  tokenHash String    @unique
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// ORGANIZATION STRUCTURE
+// ---------------------------------------------------------------------------
+
+/// Free-form structural tree: ORGANIZATION -> DIVISION -> DEPARTMENT -> TEAM.
+/// Used by the interactive org chart and for grouping that is looser than the
+/// hard `Department` dimension used in analytics.
+model OrganizationUnit {
+  id          String      @id @default(cuid())
+  name        String
+  code        String      @unique
+  type        OrgUnitType @default(DEPARTMENT)
+  description String?
+  parentId    String?
+  headUserId  String?
+  sortOrder   Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  deletedAt   DateTime?
+
+  parent      OrganizationUnit?  @relation("UnitTree", fields: [parentId], references: [id])
+  children    OrganizationUnit[] @relation("UnitTree")
+  head        User?              @relation("UnitHead", fields: [headUserId], references: [id])
+  departments Department[]
+
+  @@index([parentId])
+  @@index([type])
+  @@map("organization_units")
+}
+
+/// The functional department - the primary analytics dimension.
+model Department {
+  id          String    @id @default(cuid())
+  name        String
+  code        String    @unique
+  description String?
+  /// Hex colour used for charts and badges
+  color       String    @default("#3B82F6")
+  headUserId  String?
+  unitId      String?
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  head      User?             @relation("DepartmentHead", fields: [headUserId], references: [id])
+  unit      OrganizationUnit? @relation(fields: [unitId], references: [id])
+  members   User[]            @relation("DepartmentMembers")
+  positions Position[]
+  projects  Project[]
+  tasks     Task[]
+  workflows TaskWorkflow[]
+
+  @@index([headUserId])
+  @@index([deletedAt])
+  @@map("departments")
+}
+
+/// A job position. `reportsToId` encodes the *structural* reporting line, which
+/// is what the seeded organigram uses; `User.managerId` is the effective line.
+model Position {
+  id           String    @id @default(cuid())
+  title        String
+  code         String    @unique
+  description  String?
+  departmentId String?
+  reportsToId  String?
+  /// 100 = Country Director, 80 = Director, 60 = Manager, 40 = Specialist ...
+  level        Int       @default(10)
+  headcount    Int       @default(1)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  department Department?     @relation(fields: [departmentId], references: [id])
+  reportsTo  Position?       @relation("PositionTree", fields: [reportsToId], references: [id])
+  reports    Position[]      @relation("PositionTree")
+  users      User[]
+  stages     WorkflowStage[]
+
+  @@index([departmentId])
+  @@index([reportsToId])
+  @@map("positions")
+}
+
+// ---------------------------------------------------------------------------
+// PROJECTS
+// ---------------------------------------------------------------------------
+
+model Project {
+  id           String        @id @default(cuid())
+  name         String
+  code         String        @unique
+  description  String?
+  status       ProjectStatus @default(ACTIVE)
+  color        String        @default("#6366F1")
+  managerId    String?
+  departmentId String?
+  startDate    DateTime?
+  endDate      DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  deletedAt    DateTime?
+
+  manager    User?           @relation("ProjectManager", fields: [managerId], references: [id])
+  department Department?     @relation(fields: [departmentId], references: [id])
+  members    ProjectMember[]
+  tasks      Task[]
+  workflows  TaskWorkflow[]
+
+  @@index([managerId])
+  @@index([departmentId])
+  @@index([status])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String            @id @default(cuid())
+  projectId String
+  userId    String
+  role      ProjectMemberRole @default(MEMBER)
+  createdAt DateTime          @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+// ---------------------------------------------------------------------------
+// WORKFLOWS
+// ---------------------------------------------------------------------------
+
+model TaskType {
+  id          String    @id @default(cuid())
+  name        String
+  code        String    @unique
+  description String?
+  icon        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  tasks     Task[]
+  workflows TaskWorkflow[]
+
+  @@map("task_types")
+}
+
+model TaskWorkflow {
+  id           String    @id @default(cuid())
+  name         String
+  code         String    @unique
+  description  String?
+  taskTypeId   String?
+  projectId    String?
+  departmentId String?
+  isActive     Boolean   @default(true)
+  /// Default workflow used when the creator does not pick one
+  isDefault    Boolean   @default(false)
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  taskType    TaskType?            @relation(fields: [taskTypeId], references: [id])
+  project     Project?             @relation(fields: [projectId], references: [id])
+  department  Department?          @relation(fields: [departmentId], references: [id])
+  createdBy   User?                @relation("WorkflowCreator", fields: [createdById], references: [id])
+  stages      WorkflowStage[]
+  transitions WorkflowTransition[]
+  tasks       Task[]
+
+  @@index([taskTypeId])
+  @@index([projectId])
+  @@index([departmentId])
+  @@index([isActive])
+  @@map("task_workflows")
+}
+
+model WorkflowStage {
+  id               String       @id @default(cuid())
+  workflowId       String
+  name             String
+  description      String?
+  /// 1-based position in the chain
+  order            Int
+  type             StageType    @default(WORK)
+  assigneeMode     AssigneeMode @default(UNASSIGNED)
+  assigneeUserId   String?
+  positionId       String?
+  roleId           String?
+  /// Status the task is put into when it enters this stage
+  entryStatus      TaskStatus   @default(ASSIGNED)
+  requiresApproval Boolean      @default(false)
+  /// Service-level target for this stage, in hours (used by bottleneck reports)
+  slaHours         Int?
+  isFinal          Boolean      @default(false)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  workflow     TaskWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  assigneeUser User?        @relation("StageSpecificUser", fields: [assigneeUserId], references: [id])
+  position     Position?    @relation(fields: [positionId], references: [id])
+  role         Role?        @relation(fields: [roleId], references: [id])
+
+  fromTransitions WorkflowTransition[] @relation("TransitionFrom")
+  toTransitions   WorkflowTransition[] @relation("TransitionTo")
+  tasks           Task[]
+  assignments     TaskAssignment[]
+  approvals       Approval[]
+
+  @@unique([workflowId, order])
+  @@index([workflowId])
+  @@map("workflow_stages")
+}
+
+/// Explicit stage graph. When a workflow has no transitions the engine falls
+/// back to a linear order (stage N -> stage N+1).
+model WorkflowTransition {
+  id                 String   @id @default(cuid())
+  workflowId         String
+  fromStageId        String
+  toStageId          String
+  /// Label shown on the action button, e.g. "Send for review"
+  label              String?
+  /// Optional permission key required to take this transition
+  requiresPermission String?
+  createdAt          DateTime @default(now())
+
+  workflow  TaskWorkflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  fromStage WorkflowStage @relation("TransitionFrom", fields: [fromStageId], references: [id], onDelete: Cascade)
+  toStage   WorkflowStage @relation("TransitionTo", fields: [toStageId], references: [id], onDelete: Cascade)
+
+  @@unique([fromStageId, toStageId])
+  @@index([workflowId])
+  @@map("workflow_transitions")
+}
+
+// ---------------------------------------------------------------------------
+// TASKS
+// ---------------------------------------------------------------------------
+
+model Task {
+  id     String @id @default(cuid())
+  /// Human reference shown in the UI as `#1042`
+  number Int    @unique @default(autoincrement())
+
+  title       String
+  description String?
+
+  status   TaskStatus   @default(DRAFT)
+  priority TaskPriority @default(MEDIUM)
+
+  createdById    String
+  currentOwnerId String?
+  assignedById   String?
+  departmentId   String?
+  projectId      String?
+  taskTypeId     String?
+  workflowId     String?
+  currentStageId String?
+  parentTaskId   String?
+
+  /// Denormalised "waiting for" state so dashboards stay a single query.
+  waitingForUserId String?
+  waitingReason    WaitingReason @default(NONE)
+  waitingSince     DateTime?
+
+  startDate   DateTime?
+  deadline    DateTime?
+  completedAt DateTime?
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  /// When the current owner took possession - drives "time in current hands".
+  ownerSince  DateTime?
+
+  estimatedHours Float?
+  actualHours    Float?
+  progress       Int     @default(0)
+  blockedReason  String?
+  cancelReason   String?
+  /// Cached counts so list views do not need sub-queries
+  subtaskCount          Int @default(0)
+  completedSubtaskCount Int @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  createdBy    User?          @relation("TaskCreator", fields: [createdById], references: [id])
+  currentOwner User?          @relation("TaskOwner", fields: [currentOwnerId], references: [id])
+  assignedBy   User?          @relation("TaskAssigner", fields: [assignedById], references: [id])
+  waitingFor   User?          @relation("TaskWaitingFor", fields: [waitingForUserId], references: [id])
+  department   Department?    @relation(fields: [departmentId], references: [id])
+  project      Project?       @relation(fields: [projectId], references: [id])
+  taskType     TaskType?      @relation(fields: [taskTypeId], references: [id])
+  workflow     TaskWorkflow?  @relation(fields: [workflowId], references: [id])
+  currentStage WorkflowStage? @relation(fields: [currentStageId], references: [id])
+  parentTask   Task?          @relation("TaskSubtasks", fields: [parentTaskId], references: [id])
+  subtasks     Task[]         @relation("TaskSubtasks")
+
+  assignments   TaskAssignment[]
+  history       TaskHistory[]
+  comments      TaskComment[]
+  attachments   TaskAttachment[]
+  approvals     Approval[]
+  tags          TaskTag[]
+  watchers      TaskWatcher[]
+  notifications Notification[]
+
+  @@index([status])
+  @@index([priority])
+  @@index([currentOwnerId, status])
+  @@index([createdById])
+  @@index([departmentId, status])
+  @@index([projectId, status])
+  @@index([workflowId])
+  @@index([parentTaskId])
+  @@index([deadline])
+  @@index([waitingForUserId])
+  @@index([deletedAt])
+  @@index([createdAt])
+  @@index([completedAt])
+  @@map("tasks")
+}
+
+/// Ownership ledger. Exactly one open row (exitedAt = null) per active task.
+model TaskAssignment {
+  id           String         @id @default(cuid())
+  taskId       String
+  userId       String
+  assignedById String?
+  stageId      String?
+  role         AssignmentRole @default(OWNER)
+  /// Free-text handover note captured at the moment of transfer
+  note         String?
+  enteredAt    DateTime       @default(now())
+  exitedAt     DateTime?
+  /// Materialised on exit so analytics never has to subtract dates in SQL
+  durationSeconds Int?
+  /// 1-based position of this tenure in the task journey
+  sequence     Int            @default(1)
+  createdAt    DateTime       @default(now())
+
+  task       Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user       User           @relation("AssignmentUser", fields: [userId], references: [id])
+  assignedBy User?          @relation("AssignmentAssigner", fields: [assignedById], references: [id])
+  stage      WorkflowStage? @relation(fields: [stageId], references: [id])
+
+  @@index([taskId, sequence])
+  @@index([userId, exitedAt])
+  @@index([exitedAt])
+  @@map("task_assignments")
+}
+
+/// Immutable event log for a task. Append-only: never updated, never deleted.
+model TaskHistory {
+  id        String        @id @default(cuid())
+  taskId    String
+  actorId   String?
+  action    HistoryAction
+  /// Human readable one-liner rendered in the timeline
+  summary   String
+  fromValue String?
+  toValue   String?
+  /// Structured payload (stage ids, mentioned users, file names, ...)
+  metadata  Json?
+  comment   String?
+  createdAt DateTime      @default(now())
+
+  task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([taskId, createdAt])
+  @@index([actorId])
+  @@index([action])
+  @@map("task_history")
+}
+
+model TaskComment {
+  id        String    @id @default(cuid())
+  taskId    String
+  authorId  String
+  parentId  String?
+  body      String
+  editedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  task        Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author      User             @relation(fields: [authorId], references: [id])
+  parent      TaskComment?     @relation("CommentReplies", fields: [parentId], references: [id])
+  replies     TaskComment[]    @relation("CommentReplies")
+  mentions    CommentMention[]
+  attachments TaskAttachment[]
+
+  @@index([taskId, createdAt])
+  @@index([parentId])
+  @@map("task_comments")
+}
+
+model CommentMention {
+  id        String   @id @default(cuid())
+  commentId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  comment TaskComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@index([userId])
+  @@map("comment_mentions")
+}
+
+model TaskAttachment {
+  id              String    @id @default(cuid())
+  taskId          String
+  commentId       String?
+  uploadedById    String
+  fileName        String
+  /// Provider-specific key/path - never exposed directly to the browser
+  storageKey      String
+  storageProvider String    @default("local")
+  mimeType        String
+  extension       String
+  sizeBytes       Int
+  checksum        String?
+  createdAt       DateTime  @default(now())
+  deletedAt       DateTime?
+
+  task       Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  comment    TaskComment? @relation(fields: [commentId], references: [id])
+  uploadedBy User         @relation(fields: [uploadedById], references: [id])
+
+  @@index([taskId])
+  @@index([commentId])
+  @@map("task_attachments")
+}
+
+model Approval {
+  id            String         @id @default(cuid())
+  taskId        String
+  stageId       String?
+  approverId    String
+  requestedById String?
+  status        ApprovalStatus @default(PENDING)
+  /// Position in a multi-step approval chain (1 = first approver)
+  sequence      Int            @default(1)
+  comment       String?
+  dueAt         DateTime?
+  decidedAt     DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  task        Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  stage       WorkflowStage? @relation(fields: [stageId], references: [id])
+  approver    User           @relation("ApprovalApprover", fields: [approverId], references: [id])
+  requestedBy User?          @relation("ApprovalRequester", fields: [requestedById], references: [id])
+
+  @@index([taskId, sequence])
+  @@index([approverId, status])
+  @@index([status])
+  @@map("approvals")
+}
+
+model Tag {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  color     String    @default("#64748B")
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  tasks TaskTag[]
+
+  @@map("tags")
+}
+
+model TaskTag {
+  taskId String
+  tagId  String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, tagId])
+  @@index([tagId])
+  @@map("task_tags")
+}
+
+model TaskWatcher {
+  taskId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, userId])
+  @@index([userId])
+  @@map("task_watchers")
+}
+
+// ---------------------------------------------------------------------------
+// NOTIFICATIONS, AUDIT & SETTINGS
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id          String              @id @default(cuid())
+  userId      String
+  type        NotificationType
+  title       String
+  body        String?
+  taskId      String?
+  /// Relative URL the notification links to
+  link        String?
+  metadata    Json?
+  readAt      DateTime?
+  channel     NotificationChannel @default(IN_APP)
+  emailStatus DeliveryStatus      @default(SKIPPED)
+  createdAt   DateTime            @default(now())
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task Task? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@index([taskId])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id     String           @id @default(cuid())
+  userId String
+  type   NotificationType
+  inApp  Boolean          @default(true)
+  email  Boolean          @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@map("notification_preferences")
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorId      String?
+  action       String
+  resourceType String
+  resourceId   String?
+  /// Short human sentence for the admin log viewer
+  summary      String?
+  departmentId String?
+  before       Json?
+  after        Json?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([actorId, createdAt])
+  @@index([resourceType, resourceId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([departmentId])
+  @@map("audit_logs")
+}
+
+model Setting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       Json
+  category    String   @default("general")
+  label       String?
+  description String?
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+  @@map("settings")
+}
