@@ -1,12 +1,13 @@
 # ============================================================================
 #  CARE Workflow — Render Blueprint
 #
-#  Deploys three things: a managed Postgres, the NestJS API, and the Next.js
-#  client. Point Render at this file (New → Blueprint) and it provisions all
-#  three, wiring the database and the cross-service URLs automatically.
+#  Deploys the backend only: a managed Postgres and the NestJS API. The Next.js
+#  client is deployed separately on Vercel, which builds it on bigger machines
+#  and serves it from a CDN. Point Render at this file (New → Blueprint) and it
+#  provisions the database and the API, wiring DATABASE_URL automatically.
 #
-#  Two values must be set by hand after the first deploy — see the comments on
-#  NEXT_PUBLIC_API_URL and NEXT_PUBLIC_APP_URL below, and docs/deployment.md.
+#  Two values must be set by hand once Vercel has assigned a domain — see the
+#  comments on CORS_ORIGINS and NEXT_PUBLIC_APP_URL below.
 # ============================================================================
 
 databases:
@@ -78,18 +79,19 @@ services:
       - key: BCRYPT_SALT_ROUNDS
         value: '12'
 
-      # The API only accepts browser requests from the client service. Render
-      # supplies a bare hostname; the config layer adds the https:// scheme.
+      # The web client is deployed on Vercel, so Render cannot resolve its URL
+      # for us -- fromService only reaches services inside this blueprint. Set
+      # both by hand in the dashboard once Vercel has assigned a domain:
+      #   CORS_ORIGINS        = https://<your-app>.vercel.app
+      #   NEXT_PUBLIC_APP_URL = https://<your-app>.vercel.app
+      #
+      # CORS_ORIGINS is an exact-match, comma-separated list (see
+      # apps/api/src/config/configuration.ts). Vercel preview deploys get a fresh
+      # hostname each time, so add them individually or test against production.
       - key: CORS_ORIGINS
-        fromService:
-          name: care-web
-          type: web
-          property: host
+        sync: false
       - key: NEXT_PUBLIC_APP_URL
-        fromService:
-          name: care-web
-          type: web
-          property: host
+        sync: false
 
       - key: RATE_LIMIT_TTL
         value: '60'
@@ -124,46 +126,3 @@ services:
       name: care-uploads
       mountPath: /var/data
       sizeGB: 5
-
-  # --------------------------------------------------------------------------
-  # Web client
-  # --------------------------------------------------------------------------
-  - type: web
-    name: care-web
-    runtime: node
-    region: frankfurt
-    plan: starter
-    branch: main
-    buildFilter:
-      paths:
-        - apps/web/**
-        - package.json
-        - package-lock.json
-        - render.yaml
-    buildCommand: npm ci --include=dev && npm run build:web
-    startCommand: npm run start:web
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NODE_VERSION
-        value: '22'
-
-      # NODE_ENV=production above makes npm default to --omit=dev, which strips
-      # the build toolchain (@nestjs/cli, typescript, tailwind). Root .npmrc sets
-      # this too; keeping it here means the build survives a hand-edited command.
-      - key: NPM_CONFIG_INCLUDE
-        value: dev
-
-      # NEXT_PUBLIC_* values are inlined into the browser bundle at BUILD time,
-      # so these cannot be wired with fromService (that resolves at runtime).
-      # After the first deploy, set both in the Render dashboard and redeploy:
-      #   NEXT_PUBLIC_API_URL  = https://care-api.onrender.com/api
-      #   NEXT_PUBLIC_APP_URL  = https://care-web.onrender.com
-      - key: NEXT_PUBLIC_API_URL
-        sync: false
-      - key: NEXT_PUBLIC_APP_URL
-        sync: false
-
-      # Hides the demo account shortcuts on the sign-in screen.
-      - key: NEXT_PUBLIC_SHOW_DEMO_ACCOUNTS
-        value: 'false'
