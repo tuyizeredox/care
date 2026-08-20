@@ -48,6 +48,12 @@ services:
       - key: NODE_VERSION
         value: '22'
 
+      # NODE_ENV=production above makes npm default to --omit=dev, which strips
+      # the build toolchain (@nestjs/cli, typescript, tailwind). Root .npmrc sets
+      # this too; keeping it here means the build survives a hand-edited command.
+      - key: NPM_CONFIG_INCLUDE
+        value: dev
+
       # Render's managed Postgres is not a transaction-mode pooler, so the same
       # connection string serves the app and Prisma Migrate.
       - key: DATABASE_URL
@@ -141,6 +147,12 @@ services:
         value: production
       - key: NODE_VERSION
         value: '22'
+
+      # NODE_ENV=production above makes npm default to --omit=dev, which strips
+      # the build toolchain (@nestjs/cli, typescript, tailwind). Root .npmrc sets
+      # this too; keeping it here means the build survives a hand-edited command.
+      - key: NPM_CONFIG_INCLUDE
+        value: dev
 
       # NEXT_PUBLIC_* values are inlined into the browser bundle at BUILD time,
       # so these cannot be wired with fromService (that resolves at runtime).
