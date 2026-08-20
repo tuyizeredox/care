@@ -1131,10 +1131,8 @@ async function main(): Promise<void> {
   // ask for it explicitly.
   if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PRODUCTION_SEED !== 'true') {
     console.error(
-      'Refusing to seed with NODE_ENV=production.
-' +
-        'This creates demo accounts with a shared password.
-' +
+      'Refusing to seed with NODE_ENV=production.\n' +
+        'This creates demo accounts with a shared password.\n' +
         'If you genuinely want reference data in this environment, set ' +
         'ALLOW_PRODUCTION_SEED=true and change SEED_DEFAULT_PASSWORD first.',
     );
