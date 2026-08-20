@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 
-export default function GlobalError({
+export default function RouteError({
   error,
   reset,
 }: {
