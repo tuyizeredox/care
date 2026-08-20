@@ -5,6 +5,7 @@
   "description": "OrgFlow web client (Next.js + TypeScript + Tailwind CSS)",
   "scripts": {
     "dev": "next dev -p 3000",
+    "prebuild": "node -e \"console.log('[build-env] node='+process.version+' platform='+process.platform+' arch='+process.arch+' NODE_ENV='+JSON.stringify(process.env.NODE_ENV))\"",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
