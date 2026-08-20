@@ -6,6 +6,7 @@
   "scripts": {
     "build": "prisma generate && nest build",
     "postinstall": "prisma generate",
+    "predev": "node ../../scripts/assert-not-production.cjs",
     "dev": "nest start --watch",
     "start": "nest start",
     "start:prod": "node dist/main.js",
