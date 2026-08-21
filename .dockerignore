@@ -1,0 +1,19 @@
+# Build context is the repo root. Keep host artefacts out of the image so the
+# build is reproducible and the layer cache is not busted by local state.
+node_modules
+**/node_modules
+apps/api/dist
+apps/web/.next
+apps/web/out
+**/*.tsbuildinfo
+coverage
+.git
+.github
+**/.env
+**/.env.*
+!.env.example
+docs
+README.md
+docker-compose.yml
+*.log
+.vscode
