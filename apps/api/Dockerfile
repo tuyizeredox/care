@@ -83,6 +83,12 @@ COPY --from=builder /app/apps/api/dist ./apps/api/dist
 # there, which it already has, and never writes to it.
 RUN mkdir -p /var/data/uploads && chown -R node:node /var/data
 
+# StorageService resolves STORAGE_LOCAL_PATH against the working directory and
+# defaults to './uploads', which lands in root-owned /app and fails with EACCES
+# under USER node. Point it at the directory chowned above so the image works
+# whether or not the host remembers to set it; the host can still override.
+ENV STORAGE_LOCAL_PATH=/var/data/uploads
+
 USER node
 
 # Documentation only; the app binds process.env.PORT, which the host injects.
