@@ -1,7 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { mkdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import { CloudinaryStorageProvider } from './providers/cloudinary-storage.provider';
 import { LocalStorageProvider } from './providers/local-storage.provider';
 import { S3StorageProvider } from './providers/s3-storage.provider';
@@ -47,10 +45,13 @@ export class StorageService implements OnModuleInit {
     }
   }
 
-  async onModuleInit(): Promise<void> {
-    if (this.provider.name === 'local') {
-      await mkdir(resolve(this.localPath), { recursive: true });
-    }
+  onModuleInit(): void {
+    // The upload directory is NOT created here. LocalStorageProvider already
+    // calls mkdir(..., { recursive: true }) before each write, so creating it
+    // eagerly only duplicated that -- and it did so against the process's
+    // working directory, which is read-only in the container image. That turned
+    // a storage detail into a fatal boot error (EACCES on /app/apps/api/uploads)
+    // even for deployments that never upload anything.
     this.logger.log('File storage provider: ' + this.provider.name);
   }
 
