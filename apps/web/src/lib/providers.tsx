@@ -2,10 +2,12 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from 'next-themes';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { InstallPrompt } from '@/components/pwa/install-prompt';
 import { Toaster } from '@/components/ui/sonner';
 import { AuthProvider } from './auth-context';
 import { ApiError } from './api-client';
+import { registerServiceWorker } from './pwa';
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -25,12 +27,15 @@ export function Providers({ children }: { children: ReactNode }) {
       }),
   );
 
+  useEffect(registerServiceWorker, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
         <AuthProvider>
           {children}
           <Toaster />
+          <InstallPrompt />
         </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>

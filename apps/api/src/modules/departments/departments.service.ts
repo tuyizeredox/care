@@ -201,19 +201,28 @@ export class DepartmentsService {
   }
 
   async remove(id: string, actor: AuthenticatedUser) {
+    const department = await this.prisma.department.findFirst({ where: { id, deletedAt: null } });
+    if (!department) throw new NotFoundException('This department could not be found.');
+
     const members = await this.prisma.user.count({ where: { departmentId: id, deletedAt: null } });
     if (members > 0) {
       throw new BadRequestException(
         `This department still has ${members} member(s). Move them before deleting it.`,
       );
     }
-    await this.prisma.department.update({ where: { id }, data: { deletedAt: new Date() } });
+
+    // Tasks keep their department for reporting; live structure is detached.
+    await this.prisma.$transaction([
+      this.prisma.department.update({ where: { id }, data: { deletedAt: new Date() } }),
+      this.prisma.position.updateMany({ where: { departmentId: id }, data: { departmentId: null } }),
+      this.prisma.project.updateMany({ where: { departmentId: id }, data: { departmentId: null } }),
+    ]);
     await this.audit.record({
       actorId: actor.id,
       action: 'department.deleted',
       resourceType: 'Department',
       resourceId: id,
-      summary: 'Deleted a department',
+      summary: `Deleted department ${department.name}`,
     });
     return { success: true };
   }

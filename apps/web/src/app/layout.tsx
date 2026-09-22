@@ -18,6 +18,10 @@ export const metadata: Metadata = {
   description:
     'CARE workflow, task tracking and accountability platform. Know who holds every task now, and how it got there.',
   robots: { index: false, follow: false },
+  applicationName: 'CARE Workflow',
+  // iOS reads these when the app is added to the home screen.
+  appleWebApp: { capable: true, title: 'CARE Workflow', statusBarStyle: 'default' },
+  formatDetection: { telephone: false },
 };
 
 export const viewport: Viewport = {

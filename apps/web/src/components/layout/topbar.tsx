@@ -3,7 +3,8 @@
 import { useTheme } from 'next-themes';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { LogOut, Menu, Moon, Plus, Search, Sun, User } from 'lucide-react';
+import { Download, LogOut, Menu, Moon, Plus, Search, Sun, User } from 'lucide-react';
+import { startInstall } from '@/components/pwa/install-prompt';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -15,6 +16,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { UserAvatar } from '@/components/ui/avatar';
 import { useAuth } from '@/lib/auth-context';
+import { canInstall, useInstallState } from '@/lib/pwa';
 import { fullName } from '@/lib/utils';
 import { GlobalSearch } from './global-search';
 import { NotificationCenter } from './notification-center';
@@ -24,6 +26,7 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
   const { theme, setTheme } = useTheme();
   const [searchOpen, setSearchOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const installable = canInstall(useInstallState());
 
   useEffect(() => setMounted(true), []);
 
@@ -106,6 +109,12 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
                 My profile
               </Link>
             </DropdownMenuItem>
+            {installable ? (
+              <DropdownMenuItem onSelect={() => void startInstall()}>
+                <Download className="h-4 w-4" aria-hidden />
+                Install app
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => void signOut()}>
               <LogOut className="h-4 w-4" aria-hidden />

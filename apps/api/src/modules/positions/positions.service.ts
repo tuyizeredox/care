@@ -137,19 +137,40 @@ export class PositionsService {
   }
 
   async remove(id: string, actor: AuthenticatedUser) {
+    const position = await this.prisma.position.findFirst({ where: { id, deletedAt: null } });
+    if (!position) throw new NotFoundException('This position could not be found.');
+
     const holders = await this.prisma.user.count({ where: { positionId: id, deletedAt: null } });
     if (holders > 0) {
       throw new BadRequestException(
         `${holders} employee(s) currently hold this position. Reassign them first.`,
       );
     }
-    await this.prisma.position.update({ where: { id }, data: { deletedAt: new Date() } });
+    const routedStage = await this.prisma.workflowStage.findFirst({
+      where: { positionId: id, workflow: { deletedAt: null } },
+      select: { name: true, workflow: { select: { name: true } } },
+    });
+    if (routedStage) {
+      throw new BadRequestException(
+        `The "${routedStage.name}" stage of the ${routedStage.workflow.name} workflow is routed to this position. Change the workflow first.`,
+      );
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.position.update({ where: { id }, data: { deletedAt: new Date() } }),
+      // Positions that reported here move up a level so the organigram stays connected.
+      this.prisma.position.updateMany({
+        where: { reportsToId: id },
+        data: { reportsToId: position.reportsToId },
+      }),
+    ]);
     await this.audit.record({
       actorId: actor.id,
       action: 'position.deleted',
       resourceType: 'Position',
       resourceId: id,
-      summary: 'Deleted a position',
+      summary: `Deleted position ${position.title}`,
+      departmentId: position.departmentId,
     });
     return { success: true };
   }

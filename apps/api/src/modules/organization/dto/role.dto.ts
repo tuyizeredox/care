@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType, PartialType } from '@nestjs/swagger';
 import { IsArray, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 
 export class CreateRoleDto {
@@ -22,6 +22,5 @@ export class CreateRoleDto {
   permissionKeys?: string[];
 }
 
-export class UpdateRoleDto extends PartialType(CreateRoleDto) {
-  @ApiProperty() @IsString() @MaxLength(80) declare name: string;
-}
+/** The key is referenced from code and never changes after creation. */
+export class UpdateRoleDto extends PartialType(OmitType(CreateRoleDto, ['key'] as const)) {}

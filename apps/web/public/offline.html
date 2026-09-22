@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#F8F7F5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#13161B" media="(prefers-color-scheme: dark)" />
+    <title>You're offline · CARE Workflow</title>
+    <!-- Served by the service worker with no network, so everything is inline. -->
+    <style>
+      :root {
+        --bg: #f8f7f5;
+        --fg: #1a1e25;
+        --muted: #6b7280;
+        --border: #e2e4e9;
+        --primary: #ba1c2e;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #13161b;
+          --fg: #eceef2;
+          --muted: #9aa0ab;
+          --border: #2a2f38;
+          --primary: #de3a4d;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 24px 16px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.55 Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        width: 100%;
+        max-width: 360px;
+        text-align: center;
+      }
+      svg {
+        width: 64px;
+        height: 64px;
+        border-radius: 15px;
+        box-shadow: 0 10px 30px -10px rgba(186, 28, 46, 0.55);
+      }
+      h1 {
+        margin: 24px 0 6px;
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: -0.011em;
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+      button {
+        margin-top: 24px;
+        height: 44px;
+        padding: 0 22px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--primary);
+        color: #fff;
+        font: inherit;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      button:focus-visible {
+        outline: 2px solid var(--primary);
+        outline-offset: 3px;
+      }
+      small {
+        display: block;
+        margin-top: 16px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <svg viewBox="0 0 512 512" aria-hidden="true">
+        <defs>
+          <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#D6263B" />
+            <stop offset="1" stop-color="#9A1526" />
+          </linearGradient>
+        </defs>
+        <rect width="512" height="512" fill="url(#bg)" />
+        <g transform="translate(-6 0)" fill="none">
+          <path
+            d="M341.6 160.9A128 128 0 1 0 341.6 351.1"
+            stroke="#fff"
+            stroke-width="56"
+            stroke-linecap="round"
+          />
+          <circle cx="384" cy="256" r="40" fill="#fff" />
+        </g>
+      </svg>
+      <h1>You're offline</h1>
+      <p>CARE Workflow needs a connection to show live tasks. Check your network and try again.</p>
+      <button type="button" onclick="location.reload()">Try again</button>
+      <small>This page will reload when you're back online.</small>
+    </main>
+    <script>
+      window.addEventListener('online', () => location.reload());
+    </script>
+  </body>
+</html>

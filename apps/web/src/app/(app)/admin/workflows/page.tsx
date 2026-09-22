@@ -1,8 +1,9 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, Copy, GitBranch, Plus } from 'lucide-react';
+import { ArrowDown, Copy, GitBranch, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -56,6 +57,7 @@ export default function AdminWorkflowsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<WorkflowRow | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<WorkflowRow | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['admin', 'workflows'],
@@ -70,6 +72,22 @@ export default function AdminWorkflowsPage() {
     },
     onError: (error) => {
       toast.error('Could not duplicate the workflow', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) => api.delete('workflows/' + id),
+    onSuccess: () => {
+      toast.success('Workflow deleted', {
+        description: 'Tasks it already routed keep their history.',
+      });
+      setDeleting(null);
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'workflows'] });
+    },
+    onError: (error) => {
+      toast.error('Could not delete the workflow', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     },
@@ -145,6 +163,14 @@ export default function AdminWorkflowsPage() {
                   <Button variant="outline" size="sm" onClick={() => setEditing(workflow)}>
                     Edit
                   </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => setDeleting(workflow)}
+                    aria-label={'Delete ' + workflow.name}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-destructive" aria-hidden />
+                  </Button>
                 </div>
               </CardHeader>
 
@@ -190,6 +216,16 @@ export default function AdminWorkflowsPage() {
             setEditing(null);
           }
         }}
+      />
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(open) => !open && setDeleting(null)}
+        title={'Delete the ' + (deleting?.name ?? '') + ' workflow?'}
+        description="New tasks will no longer follow it. A workflow still driving active tasks cannot be deleted until those tasks are completed or cancelled."
+        confirmLabel="Delete workflow"
+        onConfirm={() => deleting && remove.mutate(deleting.id)}
+        loading={remove.isPending}
       />
     </div>
   );

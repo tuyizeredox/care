@@ -108,8 +108,15 @@ export class UsersController {
 
   @Delete(':id')
   @RequirePermissions(PERMISSIONS.MANAGE_USERS)
-  @ApiOperation({ summary: 'Deactivate (soft delete) a user account' })
+  @ApiOperation({ summary: 'Delete (soft delete) a user account' })
   remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.usersService.remove(id, user);
+  }
+
+  @Post(':id/restore')
+  @RequirePermissions(PERMISSIONS.MANAGE_USERS)
+  @ApiOperation({ summary: 'Restore a deleted user account' })
+  restore(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.usersService.restore(id, user);
   }
 }

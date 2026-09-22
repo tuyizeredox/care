@@ -1,26 +1,33 @@
 'use client';
 
-import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { KeyRound, Plus, UserCog } from 'lucide-react';
+import {
+  ArchiveRestore,
+  KeyRound,
+  MoreHorizontal,
+  Pencil,
+  PauseCircle,
+  PlayCircle,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  UserCog,
+} from 'lucide-react';
 import { useState } from 'react';
-import { Controller, useForm } from 'react-hook-form';
-import { z } from 'zod';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { EmptyState } from '@/components/empty-state';
 import { Pagination } from '@/components/pagination';
 import { UserChip } from '@/components/user-chip';
-import { EmptyState } from '@/components/empty-state';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
@@ -39,96 +46,113 @@ import {
 } from '@/components/ui/table';
 import { toast } from '@/components/ui/sonner';
 import { api, ApiError } from '@/lib/api-client';
-import { humanize } from '@/lib/format';
+import { useAuth } from '@/lib/auth-context';
+import { formatRelative, humanize } from '@/lib/format';
 import type { UserSummary } from '@/lib/types';
+import { DeleteUserDialog } from './delete-user-dialog';
+import { USER_STATUSES, UserFormDialog } from './user-form-dialog';
+import { UserPermissionsDialog } from './user-permissions-dialog';
 
-const NONE = '__none__';
-
-const schema = z.object({
-  firstName: z.string().min(1, 'First name is required.'),
-  lastName: z.string().min(1, 'Last name is required.'),
-  email: z.string().email('Enter a valid email address.'),
-  password: z
-    .string()
-    .min(8, 'Use at least 8 characters.')
-    .regex(/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, 'Include upper case, lower case and a number.'),
-  roleId: z.string().min(1, 'Choose a role.'),
-  departmentId: z.string().optional(),
-  positionId: z.string().optional(),
-  managerId: z.string().optional(),
-  phone: z.string().optional(),
-});
-
-type FormValues = z.infer<typeof schema>;
-
-interface AdminUser extends UserSummary {
+export interface AdminUser extends UserSummary {
   status: string;
+  phone: string | null;
   role: { id: string; key: string; name: string };
   manager: UserSummary | null;
   lastLoginAt: string | null;
+  _count?: { reports: number };
 }
+
+const ALL = '__all__';
+const DELETED = '__deleted__';
+
+const STATUS_BADGE: Record<string, 'success' | 'warning' | 'secondary' | 'destructive'> = {
+  ACTIVE: 'success',
+  INVITED: 'secondary',
+  SUSPENDED: 'warning',
+  DEACTIVATED: 'destructive',
+};
+
+type PendingAction = { kind: 'suspend' | 'reset-password'; user: AdminUser };
+
+const errorDescription = (error: unknown) =>
+  error instanceof ApiError ? error.message : 'Please try again.';
 
 export default function AdminUsersPage() {
   const queryClient = useQueryClient();
+  const { user: me, can } = useAuth();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
-  const [createOpen, setCreateOpen] = useState(false);
+  const [status, setStatus] = useState(ALL);
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<AdminUser | null>(null);
+  const [permissionsFor, setPermissionsFor] = useState<AdminUser | null>(null);
+  const [deleting, setDeleting] = useState<AdminUser | null>(null);
+  const [pending, setPending] = useState<PendingAction | null>(null);
+
+  const showingDeleted = status === DELETED;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['admin', 'users', page, search],
-    queryFn: () => api.list<AdminUser>('users', { query: { page, pageSize: 25, search } }),
-  });
-
-  const { data: roles } = useQuery({
-    queryKey: ['roles'],
-    queryFn: () => api.get<Array<{ id: string; name: string; key: string }>>('roles'),
-  });
-  const { data: departments } = useQuery({
-    queryKey: ['departments', 'options'],
-    queryFn: () => api.get<Array<{ id: string; name: string }>>('departments'),
-  });
-  const { data: positions } = useQuery({
-    queryKey: ['positions', 'options'],
-    queryFn: () => api.get<Array<{ id: string; title: string }>>('positions'),
-  });
-
-  const form = useForm<FormValues>({ resolver: zodResolver(schema) });
-
-  const createUser = useMutation({
-    mutationFn: (values: FormValues) =>
-      api.post('users', {
-        ...values,
-        departmentId: values.departmentId === NONE ? undefined : values.departmentId,
-        positionId: values.positionId === NONE ? undefined : values.positionId,
-        managerId: values.managerId === NONE ? undefined : values.managerId,
+    queryKey: ['admin', 'users', page, search, status],
+    queryFn: () =>
+      api.list<AdminUser>('users', {
+        query: {
+          page,
+          pageSize: 25,
+          search,
+          status: status === ALL || showingDeleted ? undefined : status,
+          deleted: showingDeleted || undefined,
+        },
       }),
-    onSuccess: () => {
-      toast.success('User created');
-      setCreateOpen(false);
-      form.reset();
-      void queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
-    },
-    onError: (error) => {
-      toast.error('Could not create the user', {
-        description: error instanceof ApiError ? error.message : 'Please try again.',
-      });
-    },
   });
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+    void queryClient.invalidateQueries({ queryKey: ['users'] });
+  };
 
   const resetPassword = useMutation({
-    mutationFn: (userId: string) => api.post<{ temporaryPassword?: string }>('users/' + userId + '/reset-password'),
+    mutationFn: (userId: string) =>
+      api.post<{ temporaryPassword?: string }>('users/' + userId + '/reset-password'),
     onSuccess: (result) => {
       toast.success('Password reset', {
         description: result?.temporaryPassword
           ? 'Temporary password: ' + result.temporaryPassword
           : 'The user must set a new password at next sign-in.',
-        duration: 10000,
+        duration: 30000,
       });
+      setPending(null);
     },
     onError: (error) => {
-      toast.error('Could not reset the password', {
-        description: error instanceof ApiError ? error.message : 'Please try again.',
+      toast.error('Could not reset the password', { description: errorDescription(error) });
+    },
+  });
+
+  const setStatusMutation = useMutation({
+    mutationFn: ({ userId, next }: { userId: string; next: string }) =>
+      api.patch('users/' + userId, { status: next }),
+    onSuccess: (_result, { next }) => {
+      toast.success(next === 'ACTIVE' ? 'Account reactivated' : 'Account suspended');
+      setPending(null);
+      refresh();
+    },
+    onError: (error) => {
+      toast.error('Could not change the account status', {
+        description: errorDescription(error),
       });
+    },
+  });
+
+  const restore = useMutation({
+    mutationFn: (userId: string) => api.post('users/' + userId + '/restore'),
+    onSuccess: () => {
+      toast.success('Account restored', {
+        description: 'It is active again. Reset the password if the person needs a new one.',
+      });
+      refresh();
+    },
+    onError: (error) => {
+      toast.error('Could not restore the account', { description: errorDescription(error) });
     },
   });
 
@@ -137,17 +161,44 @@ export default function AdminUsersPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Input
-          value={search}
-          onChange={(event) => {
-            setSearch(event.target.value);
-            setPage(1);
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            value={search}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setPage(1);
+            }}
+            placeholder="Search users…"
+            className="w-64"
+            aria-label="Search users"
+          />
+          <Select
+            value={status}
+            onValueChange={(value) => {
+              setStatus(value);
+              setPage(1);
+            }}
+          >
+            <SelectTrigger className="w-44" aria-label="Filter by status">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL}>All statuses</SelectItem>
+              {USER_STATUSES.map((entry) => (
+                <SelectItem key={entry.value} value={entry.value}>
+                  {entry.label}
+                </SelectItem>
+              ))}
+              <SelectItem value={DELETED}>Deleted accounts</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          onClick={() => {
+            setEditing(null);
+            setFormOpen(true);
           }}
-          placeholder="Search users…"
-          className="max-w-xs"
-          aria-label="Search users"
-        />
-        <Button onClick={() => setCreateOpen(true)}>
+        >
           <Plus className="h-4 w-4" aria-hidden />
           New user
         </Button>
@@ -160,7 +211,10 @@ export default function AdminUsersPage() {
           ))}
         </div>
       ) : users.length === 0 ? (
-        <EmptyState icon={UserCog} title="No users found" />
+        <EmptyState
+          icon={UserCog}
+          title={showingDeleted ? 'No deleted accounts' : 'No users found'}
+        />
       ) : (
         <>
           <div className="rounded-lg border">
@@ -173,45 +227,130 @@ export default function AdminUsersPage() {
                   <TableHead>Role</TableHead>
                   <TableHead>Manager</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead>Last sign-in</TableHead>
+                  <TableHead className="w-12">
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {users.map((person) => (
-                  <TableRow key={person.id}>
-                    <TableCell>
-                      <UserChip user={person} href={'/people/' + person.id} />
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {person.position?.title ?? '—'}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {person.department?.name ?? '—'}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{person.role?.name}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <UserChip user={person.manager} emptyLabel="—" />
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={person.status === 'ACTIVE' ? 'success' : 'warning'}>
-                        {humanize(person.status)}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => resetPassword.mutate(person.id)}
-                        loading={resetPassword.isPending && resetPassword.variables === person.id}
-                      >
-                        <KeyRound className="h-3.5 w-3.5" aria-hidden />
-                        Reset password
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {users.map((person) => {
+                  const isSelf = person.id === me?.id;
+                  return (
+                    <TableRow key={person.id}>
+                      <TableCell>
+                        <UserChip
+                          user={person}
+                          href={showingDeleted ? null : '/people/' + person.id}
+                        />
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {person.position?.title ?? '—'}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {person.department?.name ?? '—'}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="secondary">{person.role?.name}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <UserChip user={person.manager} emptyLabel="—" />
+                      </TableCell>
+                      <TableCell>
+                        {showingDeleted ? (
+                          <Badge variant="destructive">Deleted</Badge>
+                        ) : (
+                          <Badge variant={STATUS_BADGE[person.status] ?? 'secondary'}>
+                            {humanize(person.status)}
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {person.lastLoginAt ? formatRelative(person.lastLoginAt) : 'Never'}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {showingDeleted ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => restore.mutate(person.id)}
+                            loading={restore.isPending && restore.variables === person.id}
+                          >
+                            <ArchiveRestore className="h-3.5 w-3.5" aria-hidden />
+                            Restore
+                          </Button>
+                        ) : (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label={'Actions for ' + person.firstName + ' ' + person.lastName}
+                              >
+                                <MoreHorizontal className="h-4 w-4" aria-hidden />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem
+                                onSelect={() => {
+                                  setEditing(person);
+                                  setFormOpen(true);
+                                }}
+                              >
+                                <Pencil aria-hidden />
+                                Edit details
+                              </DropdownMenuItem>
+                              {can('manage_roles') && !isSelf ? (
+                                <DropdownMenuItem onSelect={() => setPermissionsFor(person)}>
+                                  <ShieldCheck aria-hidden />
+                                  Permissions
+                                </DropdownMenuItem>
+                              ) : null}
+                              <DropdownMenuItem
+                                onSelect={() => setPending({ kind: 'reset-password', user: person })}
+                              >
+                                <KeyRound aria-hidden />
+                                Reset password
+                              </DropdownMenuItem>
+                              {isSelf ? null : (
+                                <>
+                                  {person.status === 'ACTIVE' ? (
+                                    <DropdownMenuItem
+                                      onSelect={() => setPending({ kind: 'suspend', user: person })}
+                                    >
+                                      <PauseCircle aria-hidden />
+                                      Suspend
+                                    </DropdownMenuItem>
+                                  ) : (
+                                    <DropdownMenuItem
+                                      onSelect={() =>
+                                        setStatusMutation.mutate({
+                                          userId: person.id,
+                                          next: 'ACTIVE',
+                                        })
+                                      }
+                                    >
+                                      <PlayCircle aria-hidden />
+                                      Reactivate
+                                    </DropdownMenuItem>
+                                  )}
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    onSelect={() => setDeleting(person)}
+                                  >
+                                    <Trash2 aria-hidden />
+                                    Delete user
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
@@ -221,164 +360,50 @@ export default function AdminUsersPage() {
         </>
       )}
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create a user</DialogTitle>
-            <DialogDescription>
-              The account is active immediately. Reporting lines drive team visibility.
-            </DialogDescription>
-          </DialogHeader>
-
-          <form
-            id="create-user-form"
-            onSubmit={form.handleSubmit((values) => createUser.mutate(values))}
-            className="space-y-3"
-            noValidate
-          >
-            <div className="grid gap-3 sm:grid-cols-2">
-              <FormField id="firstName" label="First name" required error={form.formState.errors.firstName?.message}>
-                <Input id="firstName" {...form.register('firstName')} />
-              </FormField>
-              <FormField id="lastName" label="Last name" required error={form.formState.errors.lastName?.message}>
-                <Input id="lastName" {...form.register('lastName')} />
-              </FormField>
-            </div>
-
-            <FormField id="email" label="Email" required error={form.formState.errors.email?.message}>
-              <Input id="email" type="email" {...form.register('email')} />
-            </FormField>
-
-            <FormField
-              id="password"
-              label="Temporary password"
-              required
-              error={form.formState.errors.password?.message}
-            >
-              <Input id="password" type="text" {...form.register('password')} />
-            </FormField>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SelectField
-                control={form.control}
-                name="roleId"
-                label="Role"
-                required
-                error={form.formState.errors.roleId?.message}
-                options={(roles ?? []).map((role) => ({ id: role.id, name: role.name }))}
-                allowNone={false}
-              />
-              <SelectField
-                control={form.control}
-                name="departmentId"
-                label="Department"
-                options={(departments ?? []).map((department) => ({
-                  id: department.id,
-                  name: department.name,
-                }))}
-              />
-              <SelectField
-                control={form.control}
-                name="positionId"
-                label="Position"
-                options={(positions ?? []).map((position) => ({
-                  id: position.id,
-                  name: position.title,
-                }))}
-              />
-              <SelectField
-                control={form.control}
-                name="managerId"
-                label="Reports to"
-                options={users.map((person) => ({
-                  id: person.id,
-                  name: person.firstName + ' ' + person.lastName,
-                }))}
-              />
-            </div>
-          </form>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" form="create-user-form" loading={createUser.isPending}>
-              Create user
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function FormField({
-  id,
-  label,
-  required,
-  error,
-  children,
-}: {
-  id: string;
-  label: string;
-  required?: boolean;
-  error?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id} required={required}>
-        {label}
-      </Label>
-      {children}
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
-    </div>
-  );
-}
-
-function SelectField({
-  control,
-  name,
-  label,
-  options,
-  required,
-  error,
-  allowNone = true,
-}: {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  control: any;
-  name: keyof FormValues;
-  label: string;
-  options: Array<{ id: string; name: string }>;
-  required?: boolean;
-  error?: string;
-  allowNone?: boolean;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <Label htmlFor={String(name)} required={required}>
-        {label}
-      </Label>
-      <Controller
-        control={control}
-        name={name}
-        render={({ field }) => (
-          <Select value={field.value ?? ''} onValueChange={field.onChange}>
-            <SelectTrigger id={String(name)}>
-              <SelectValue placeholder="Select" />
-            </SelectTrigger>
-            <SelectContent>
-              {allowNone ? <SelectItem value={NONE}>None</SelectItem> : null}
-              {options.map((option) => (
-                <SelectItem key={option.id} value={option.id}>
-                  {option.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
+      <UserFormDialog
+        key={editing?.id ?? 'new'}
+        user={editing}
+        open={formOpen}
+        onOpenChange={(open) => {
+          setFormOpen(open);
+          if (!open) setEditing(null);
+        }}
+        isSelf={editing !== null && editing.id === me?.id}
       />
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+
+      <UserPermissionsDialog
+        user={permissionsFor}
+        onOpenChange={(open) => !open && setPermissionsFor(null)}
+      />
+
+      <DeleteUserDialog user={deleting} onOpenChange={(open) => !open && setDeleting(null)} />
+
+      <ConfirmDialog
+        open={pending !== null}
+        onOpenChange={(open) => !open && setPending(null)}
+        title={
+          pending?.kind === 'suspend'
+            ? 'Suspend ' + pending.user.firstName + ' ' + pending.user.lastName + '?'
+            : 'Reset the password for ' +
+              (pending ? pending.user.firstName + ' ' + pending.user.lastName : '') +
+              '?'
+        }
+        description={
+          pending?.kind === 'suspend'
+            ? 'They are signed out at once and cannot sign in until reactivated. Their tasks stay with them.'
+            : 'Their current password stops working and they are signed out. You will see a temporary password to pass on.'
+        }
+        confirmLabel={pending?.kind === 'suspend' ? 'Suspend account' : 'Reset password'}
+        onConfirm={() => {
+          if (!pending) return;
+          if (pending.kind === 'suspend') {
+            setStatusMutation.mutate({ userId: pending.user.id, next: 'SUSPENDED' });
+          } else {
+            resetPassword.mutate(pending.user.id);
+          }
+        }}
+        loading={setStatusMutation.isPending || resetPassword.isPending}
+      />
     </div>
   );
 }

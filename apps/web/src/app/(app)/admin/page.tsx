@@ -6,10 +6,12 @@ import { Card, CardContent } from '@/components/ui/card';
 import { useAuth } from '@/lib/auth-context';
 
 const DESCRIPTIONS: Record<string, string> = {
-  '/admin/users': 'Create accounts, set roles, reporting lines and per-user permissions.',
-  '/admin/organization': 'Departments, positions and the structural reporting tree.',
-  '/admin/workflows': 'Build the routes tasks follow, stage by stage.',
-  '/admin/roles': 'Roles and the permissions attached to each of them.',
+  '/admin/users':
+    'Create, edit, suspend, delete and restore accounts; set roles, reporting lines and per-user permissions.',
+  '/admin/organization': 'Create, edit and delete departments, positions and reporting lines.',
+  '/admin/workflows': 'Build, edit and delete the routes tasks follow, stage by stage.',
+  '/admin/task-types': 'The task types and tags that classify work.',
+  '/admin/roles': 'Create, edit and delete roles and the permissions attached to each of them.',
   '/admin/settings': 'Organisation name, defaults and notification behaviour.',
   '/admin/audit': 'Every security-relevant action recorded by the system.',
 };

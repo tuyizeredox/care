@@ -7,6 +7,7 @@ import {
   FolderKanban,
   LayoutDashboard,
   Settings,
+  Shapes,
   ShieldCheck,
   Users,
 } from 'lucide-react';
@@ -66,6 +67,7 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: Settings,
         permissions: [
           'manage_users',
+          'manage_roles',
           'manage_organization',
           'manage_workflows',
           'manage_settings',
@@ -90,6 +92,12 @@ export const ADMIN_TABS: NavItem[] = [
     label: 'Workflows',
     icon: FolderKanban,
     permissions: ['manage_workflows'],
+  },
+  {
+    href: '/admin/task-types',
+    label: 'Task types & tags',
+    icon: Shapes,
+    permissions: ['manage_workflows', 'manage_settings'],
   },
   { href: '/admin/roles', label: 'Roles & permissions', icon: ShieldCheck, permissions: ['manage_roles'] },
   { href: '/admin/settings', label: 'System settings', icon: Settings, permissions: ['manage_settings'] },

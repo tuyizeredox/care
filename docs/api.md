@@ -242,14 +242,18 @@ beginning `=`, `+`, `-` or `@` is quoted to prevent formula injection.
 | Method | Path | Permission |
 | --- | --- | --- |
 | `GET` | `/users`, `/users/directory`, `/users/:id` | visibility |
+| `GET` | `/users?deleted=true` (deleted accounts) | `manage_users` |
 | `POST` | `/users` | `manage_users` |
-| `PATCH` | `/users/:id`, `/users/:id/permissions` | `manage_users` |
-| `POST` | `/users/:id/reset-password` | `manage_users` |
+| `PATCH` | `/users/:id` | `manage_users` |
+| `DELETE` | `/users/:id` (soft delete) | `manage_users` |
+| `POST` | `/users/:id/restore`, `/users/:id/reset-password` | `manage_users` |
+| `PATCH` | `/users/:id/permissions` | `manage_roles` |
 | `GET` | `/organization/chart`, `/organization/overview` | authenticated |
 | `GET` | `/departments`, `/positions`, `/roles`, `/permissions` | authenticated |
 | `POST`/`PATCH`/`DELETE` | `/departments`, `/positions` | `manage_organization` |
-| `PATCH` | `/roles/:id` | `manage_roles` |
-| `GET`/`POST`/`PATCH` | `/workflows` | `manage_workflows` |
+| `POST`/`PATCH`/`DELETE` | `/roles` | `manage_roles` |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/workflows`, `/task-types` | `manage_workflows` |
+| `PATCH`/`DELETE` | `/tags/:id` | `manage_settings` |
 | `GET`/`PUT` | `/settings` | `manage_settings` |
 | `GET` | `/audit-logs`, `/audit-logs/actions` | `view_audit_logs` |
 | `POST` | `/reminders/run` | `manage_settings` |

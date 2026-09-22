@@ -67,8 +67,14 @@ export class TagsService {
     });
   }
 
+  /** Tags are labels, not history: deleting one also takes it off every task. */
   async remove(id: string) {
-    await this.prisma.tag.update({ where: { id }, data: { deletedAt: new Date() } });
+    const tag = await this.prisma.tag.findFirst({ where: { id, deletedAt: null } });
+    if (!tag) throw new NotFoundException('This tag could not be found.');
+    await this.prisma.$transaction([
+      this.prisma.taskTag.deleteMany({ where: { tagId: id } }),
+      this.prisma.tag.update({ where: { id }, data: { deletedAt: new Date() } }),
+    ]);
     return { success: true };
   }
 

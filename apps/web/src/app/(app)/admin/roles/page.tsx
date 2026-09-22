@@ -1,10 +1,12 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck } from 'lucide-react';
+import { Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -12,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { api, ApiError } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
+import { RoleDialog } from './role-dialog';
 
 interface Permission {
   id: string;
@@ -21,7 +24,7 @@ interface Permission {
   category: string;
 }
 
-interface Role {
+export interface Role {
   id: string;
   key: string;
   name: string;
@@ -36,6 +39,8 @@ interface Role {
 export default function AdminRolesPage() {
   const queryClient = useQueryClient();
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
+  const [roleDialog, setRoleDialog] = useState<{ role: Role | null } | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data: roles, isLoading } = useQuery({
     queryKey: ['roles', 'detail'],
@@ -51,13 +56,28 @@ export default function AdminRolesPage() {
 
   const updateRole = useMutation({
     mutationFn: ({ roleId, permissionKeys }: { roleId: string; permissionKeys: string[] }) =>
-      api.patch('roles/' + roleId, { permissions: permissionKeys }),
+      api.patch('roles/' + roleId, { permissionKeys }),
     onSuccess: () => {
       toast.success('Role permissions updated');
       void queryClient.invalidateQueries({ queryKey: ['roles'] });
     },
     onError: (error) => {
       toast.error('Could not update the role', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    },
+  });
+
+  const deleteRole = useMutation({
+    mutationFn: (roleId: string) => api.delete('roles/' + roleId),
+    onSuccess: () => {
+      toast.success('Role deleted');
+      setDeleteOpen(false);
+      setSelectedRoleId(null);
+      void queryClient.invalidateQueries({ queryKey: ['roles'] });
+    },
+    onError: (error) => {
+      toast.error('Could not delete the role', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     },
@@ -96,8 +116,12 @@ export default function AdminRolesPage() {
   return (
     <div className="grid gap-4 lg:grid-cols-4">
       <Card className="lg:col-span-1">
-        <CardHeader className="pb-3">
+        <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
           <CardTitle>Roles</CardTitle>
+          <Button size="sm" variant="outline" onClick={() => setRoleDialog({ role: null })}>
+            <Plus className="h-3.5 w-3.5" aria-hidden />
+            New
+          </Button>
         </CardHeader>
         <CardContent className="space-y-1 pt-0">
           {(roles ?? []).map((role) => (
@@ -115,7 +139,7 @@ export default function AdminRolesPage() {
                 <span className="shrink-0 text-2xs text-muted-foreground">L{role.level}</span>
               </span>
               <span className="block truncate text-2xs text-muted-foreground">
-                {role.permissions.length} permission(s)
+                {role.permissions.length} permission(s) · {role._count?.users ?? 0} user(s)
               </span>
             </button>
           ))}
@@ -123,13 +147,36 @@ export default function AdminRolesPage() {
       </Card>
 
       <Card className="lg:col-span-3">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex flex-wrap items-center gap-2">
-            {selectedRole?.name}
-            {selectedRole?.isSystem ? <Badge variant="secondary">System role</Badge> : null}
-          </CardTitle>
-          {selectedRole?.description ? (
-            <p className="text-xs text-muted-foreground">{selectedRole.description}</p>
+        <CardHeader className="flex-row items-start justify-between gap-2 space-y-0 pb-3">
+          <div className="min-w-0 space-y-1.5">
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              {selectedRole?.name}
+              <span className="font-mono text-2xs font-normal text-muted-foreground">
+                {selectedRole?.key}
+              </span>
+              {selectedRole?.isSystem ? <Badge variant="secondary">System role</Badge> : null}
+            </CardTitle>
+            {selectedRole?.description ? (
+              <p className="text-xs text-muted-foreground">{selectedRole.description}</p>
+            ) : null}
+          </div>
+          {selectedRole ? (
+            <div className="flex shrink-0 gap-1.5">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setRoleDialog({ role: selectedRole })}
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden />
+                Edit
+              </Button>
+              {selectedRole.isSystem ? null : (
+                <Button variant="ghost" size="sm" onClick={() => setDeleteOpen(true)}>
+                  <Trash2 className="h-3.5 w-3.5 text-destructive" aria-hidden />
+                  Delete
+                </Button>
+              )}
+            </div>
           ) : null}
         </CardHeader>
         <CardContent className="space-y-5 pt-0">
@@ -166,6 +213,31 @@ export default function AdminRolesPage() {
           ))}
         </CardContent>
       </Card>
+
+      <RoleDialog
+        key={roleDialog?.role?.id ?? 'new'}
+        role={roleDialog?.role ?? null}
+        roles={roles ?? []}
+        open={roleDialog !== null}
+        onOpenChange={(open) => !open && setRoleDialog(null)}
+        onCreated={setSelectedRoleId}
+      />
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={'Delete the ' + (selectedRole?.name ?? '') + ' role?'}
+        description={
+          (selectedRole?._count?.users ?? 0) > 0
+            ? selectedRole?._count?.users +
+              ' user(s) still hold this role. Give them another role on the Users page first.'
+            : 'Nobody holds this role. It will be removed from the list of roles you can assign.'
+        }
+        confirmLabel="Delete role"
+        onConfirm={() => selectedRole && deleteRole.mutate(selectedRole.id)}
+        loading={deleteRole.isPending}
+        disabled={(selectedRole?._count?.users ?? 0) > 0}
+      />
     </div>
   );
 }

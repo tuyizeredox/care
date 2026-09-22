@@ -16,6 +16,12 @@ export class UserQueryDto extends PaginationQueryDto {
   @IsEnum(UserStatus)
   status?: UserStatus;
 
+  @ApiPropertyOptional({ description: 'List deleted accounts instead of current ones' })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  deleted?: boolean;
+
   @ApiPropertyOptional({ description: 'Include workload counters for each user' })
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true')

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -12,6 +13,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AccessControlService } from '../../common/services/access-control.service';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { PERMISSIONS } from '../../common/constants/permissions';
 import { Paginated } from '../../common/dto/pagination.dto';
 import { buildMeta, skipTake } from '../../common/utils/pagination.util';
 import { USER_PROFILE_SELECT, USER_SUMMARY_SELECT } from './user.select';
@@ -44,10 +46,13 @@ export class UsersService {
 
   async findAll(query: UserQueryDto, actor: AuthenticatedUser): Promise<Paginated<unknown>> {
     const { page, pageSize, search, sortBy, sortOrder } = query;
+    if (query.deleted && !this.accessControl.has(actor, PERMISSIONS.MANAGE_USERS)) {
+      throw new ForbiddenException('Only user administrators can list deleted accounts.');
+    }
     const visibility = await this.accessControl.buildUserVisibilityFilter(actor);
 
     const where: Prisma.UserWhereInput = {
-      deletedAt: null,
+      deletedAt: query.deleted ? { not: null } : null,
       ...visibility,
       ...(query.departmentId ? { departmentId: query.departmentId } : {}),
       ...(query.positionId ? { positionId: query.positionId } : {}),
@@ -210,7 +215,13 @@ export class UsersService {
 
   async create(dto: CreateUserDto, actor: AuthenticatedUser) {
     const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
-    if (existing) throw new ConflictException('A user with this email address already exists.');
+    if (existing) {
+      throw new ConflictException(
+        existing.deletedAt
+          ? 'A deleted account uses this email address. Restore it instead of creating a new one.'
+          : 'A user with this email address already exists.',
+      );
+    }
 
     await this.assertReferencesExist(dto);
 
@@ -258,6 +269,24 @@ export class UsersService {
     });
     if (!before) throw new NotFoundException('This user could not be found.');
 
+    // An administrator must not be able to lock themselves out mid-edit.
+    if (id === actor.id) {
+      if (dto.status !== undefined && dto.status !== 'ACTIVE') {
+        throw new BadRequestException('You cannot suspend or deactivate your own account.');
+      }
+      if (dto.roleId !== undefined && dto.roleId !== before.roleId) {
+        throw new BadRequestException('You cannot change your own role.');
+      }
+    }
+
+    if (dto.email !== undefined && dto.email !== before.email) {
+      const taken = await this.prisma.user.findUnique({
+        where: { email: dto.email },
+        select: { id: true },
+      });
+      if (taken) throw new ConflictException('Another account already uses this email address.');
+    }
+
     if (dto.managerId) {
       if (dto.managerId === id) {
         throw new BadRequestException('A user cannot report to themselves.');
@@ -290,6 +319,9 @@ export class UsersService {
       select: USER_PROFILE_SELECT,
     });
 
+    // The JWT strategy already rejects non-active users; this also ends their refresh chain.
+    if (user.status !== 'ACTIVE') await this.revokeSessions(id);
+
     await this.audit.record({
       actorId: actor.id,
       action: 'user.updated',
@@ -311,36 +343,101 @@ export class UsersService {
     });
   }
 
+  /**
+   * Soft-deletes an account. History, journeys and audit entries keep pointing
+   * at the row, so nothing the person did is lost. Structural references are
+   * repaired so the org tree stays connected and no workflow routes new work
+   * to someone who has left.
+   */
   async remove(id: string, actor: AuthenticatedUser) {
-    if (id === actor.id) throw new BadRequestException('You cannot deactivate your own account.');
+    if (id === actor.id) throw new BadRequestException('You cannot delete your own account.');
+
+    const target = await this.prisma.user.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, firstName: true, lastName: true, departmentId: true, managerId: true },
+    });
+    if (!target) throw new NotFoundException('This user could not be found.');
 
     const openTasks = await this.prisma.task.count({
       where: { currentOwnerId: id, deletedAt: null, status: { in: OPEN_STATUSES } },
     });
     if (openTasks > 0) {
       throw new BadRequestException(
-        `This user still owns ${openTasks} open task(s). Hand them over before deactivating the account.`,
+        `This user still owns ${openTasks} open task(s). Reassign them before deleting the account.`,
       );
     }
 
+    const pinnedStage = await this.prisma.workflowStage.findFirst({
+      where: { assigneeUserId: id, workflow: { deletedAt: null } },
+      select: { name: true, workflow: { select: { name: true } } },
+    });
+    if (pinnedStage) {
+      throw new BadRequestException(
+        `The "${pinnedStage.name}" stage of the ${pinnedStage.workflow.name} workflow is routed to this person. Change the workflow before deleting the account.`,
+      );
+    }
+
+    const now = new Date();
+    const [, reports, departments, units, projects] = await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id },
+        data: { deletedAt: now, status: 'DEACTIVATED' },
+      }),
+      // Direct reports move up a level so the management tree stays connected.
+      this.prisma.user.updateMany({
+        where: { managerId: id },
+        data: { managerId: target.managerId },
+      }),
+      this.prisma.department.updateMany({ where: { headUserId: id }, data: { headUserId: null } }),
+      this.prisma.organizationUnit.updateMany({
+        where: { headUserId: id },
+        data: { headUserId: null },
+      }),
+      this.prisma.project.updateMany({ where: { managerId: id }, data: { managerId: null } }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: id, revokedAt: null },
+        data: { revokedAt: now },
+      }),
+    ]);
+
+    const effects = {
+      reportsMoved: reports.count,
+      departmentsWithoutHead: departments.count + units.count,
+      projectsWithoutManager: projects.count,
+    };
+    await this.audit.record({
+      actorId: actor.id,
+      action: 'user.deleted',
+      resourceType: 'User',
+      resourceId: id,
+      summary: `Deleted user ${target.firstName} ${target.lastName}`,
+      departmentId: target.departmentId,
+      after: effects,
+    });
+    return { success: true, ...effects };
+  }
+
+  async restore(id: string, actor: AuthenticatedUser) {
+    const deleted = await this.prisma.user.findFirst({
+      where: { id, deletedAt: { not: null } },
+      select: { id: true },
+    });
+    if (!deleted) throw new NotFoundException('This deleted account could not be found.');
+
     const user = await this.prisma.user.update({
       where: { id },
-      data: { deletedAt: new Date(), status: 'DEACTIVATED' },
-      select: { id: true, firstName: true, lastName: true, departmentId: true },
-    });
-    await this.prisma.refreshToken.updateMany({
-      where: { userId: id, revokedAt: null },
-      data: { revokedAt: new Date() },
+      data: { deletedAt: null, status: 'ACTIVE' },
+      select: USER_PROFILE_SELECT,
     });
     await this.audit.record({
       actorId: actor.id,
-      action: 'user.deactivated',
+      action: 'user.restored',
       resourceType: 'User',
       resourceId: id,
-      summary: `Deactivated user ${user.firstName} ${user.lastName}`,
+      summary: `Restored user ${user.firstName} ${user.lastName}`,
       departmentId: user.departmentId,
     });
-    return { success: true };
+    return user;
   }
 
   async resetPassword(id: string, actor: AuthenticatedUser) {
@@ -353,10 +450,7 @@ export class UsersService {
         mustChangePassword: true,
       },
     });
-    await this.prisma.refreshToken.updateMany({
-      where: { userId: id, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
+    await this.revokeSessions(id);
     await this.audit.record({
       actorId: actor.id,
       action: 'user.password_reset',
@@ -368,6 +462,9 @@ export class UsersService {
   }
 
   async setPermissionOverrides(id: string, dto: SetUserPermissionsDto, actor: AuthenticatedUser) {
+    if (id === actor.id) {
+      throw new BadRequestException('You cannot change your own permissions.');
+    }
     const permissions = await this.prisma.permission.findMany({
       where: { key: { in: dto.overrides.map((override) => override.permissionKey) } },
       select: { id: true, key: true },
@@ -440,6 +537,13 @@ export class UsersService {
       if (row.currentOwnerId) result[row.currentOwnerId].overdue = row._count;
     }
     return result;
+  }
+
+  private async revokeSessions(userId: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
   }
 
   private async assertReferencesExist(dto: Partial<CreateUserDto>): Promise<void> {
